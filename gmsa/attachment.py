@@ -3,6 +3,8 @@ import os
 
 import googleapiclient.discovery
 
+from gmsa.exceptions import AttachmentSaveError
+
 
 class Attachment:
     '''
@@ -65,5 +67,8 @@ class Attachment:
                 'you would like to overwrite the file.'
             )
 
-        with open(filepath, 'wb') as f:
-            f.write(self.data)
+        try:
+            with open(filepath, 'wb') as f:
+                f.write(self.data)
+        except (FileNotFoundError, PermissionError, OSError) as e:
+            raise AttachmentSaveError(str(e)) from e
