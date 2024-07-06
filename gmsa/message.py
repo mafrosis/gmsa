@@ -40,7 +40,7 @@ class Message:
         label_ids: List[str] | None = None, attachments: List[Attachment] | None = None,
         headers: dict | None = None, cc: List[str] | None = None, bcc: List[str] | None = None
     ):
-        self._service = service
+        self.service = service
         self.credentials = credentials
         self.user_id = user_id
         self.id = msg_id
