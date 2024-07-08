@@ -1,12 +1,15 @@
 import glob
 import os.path
 import pickle
+import webbrowser
 from typing import List
 
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient import discovery
+
+from gmsa.exceptions import FailedToAuthenticateError
 
 _READ_WRITE_SCOPES = [
     'https://www.googleapis.com/auth/gmail.modify',
@@ -93,7 +96,7 @@ class AuthenticatedService:
     @staticmethod
     def _get_credentials(
         token_path: str | None, credentials_dir: str | None, credentials_file: str, scopes: List[str],
-        save_token: bool, host: str, port: int, bind_addr: str | None,
+        save_token: bool, host: str, port: int, bind_addr: str | None, open_browser: bool = True
     ) -> Credentials:
         credentials = None
 
@@ -107,7 +110,20 @@ class AuthenticatedService:
             else:
                 credentials_path = os.path.join(credentials_dir, credentials_file)
                 flow = InstalledAppFlow.from_client_secrets_file(credentials_path, scopes)
-                credentials = flow.run_local_server(host=host, port=port, bind_addr=bind_addr)
+                try:
+                    credentials = flow.run_local_server(
+                        host=host, port=port, bind_addr=bind_addr, timeout_seconds=120,
+                        open_browser=open_browser
+                    )
+                except webbrowser.Error:
+                    # System has no default browser configured, retry without opening browser
+                    return AuthenticatedService._get_credentials(
+                        token_path, credentials_dir, credentials_file, scopes, save_token, host, port,
+                        bind_addr, open_browser=False
+                    )
+
+            if credentials is None:
+                raise FailedToAuthenticateError
 
             if save_token:
                 with open(token_path, 'wb') as token_file:
