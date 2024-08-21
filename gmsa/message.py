@@ -1,6 +1,7 @@
 from typing import List
 
 import googleapiclient.discovery
+from google.oauth2.credentials import Credentials
 
 from gmsa import label
 from gmsa.attachment import Attachment
@@ -33,15 +34,14 @@ class Message:
         bcc: who the message was bcc'd on the message.
     '''
     def __init__(
-        self, service: googleapiclient.discovery.Resource,
-        creds: 'oauth2client.client.OAuth2Credentials', user_id: str, msg_id: str, thread_id: str,
-        recipient: str, sender: str, subject: str, date: str, snippet: str, plain: str | None = None,
-        html: str | None = None, label_ids: List[str] | None = None,
-        attachments: List[Attachment] | None = None, headers: dict | None = None,
-        cc: List[str] | None = None, bcc: List[str] | None = None
+        self, service: googleapiclient.discovery.Resource, credentials: Credentials, user_id: str,
+        msg_id: str, thread_id: str, recipient: str, sender: str, subject: str, date: str,
+        snippet: str, plain: str | None = None, html: str | None = None,
+        label_ids: List[str] | None = None, attachments: List[Attachment] | None = None,
+        headers: dict | None = None, cc: List[str] | None = None, bcc: List[str] | None = None
     ):
         self._service = service
-        self.creds = creds
+        self.credentials = credentials
         self.user_id = user_id
         self.id = msg_id
         self.thread_id = thread_id
