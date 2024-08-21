@@ -16,7 +16,6 @@ from typing import List
 from bs4 import BeautifulSoup
 from dateutil import parser
 from googleapiclient.discovery import build
-from googleapiclient.errors import HttpError
 from httplib2 import Http
 from oauth2client import client, file, tools
 from oauth2client.clientsecrets import InvalidClientSecretsError
@@ -138,12 +137,9 @@ class Gmail:
             sender, to, subject, msg_html, msg_plain, cc=cc, bcc=bcc,
             attachments=attachments, signature=signature, user_id=user_id
         )
+        res = self.service.users().messages().send(userId='me', body=msg).execute()
+        return self._build_message_from_ref(user_id, res, 'reference')
 
-        try:
-            res = self.service.users().messages().send(userId='me', body=msg).execute()
-            return self._build_message_from_ref(user_id, res, 'reference')
-        except HttpError as error:
-            raise error
 
     def get_unread_inbox(
         self, user_id: str = 'me', labels: List[Label] | None = None, query: str = ''
@@ -366,34 +362,30 @@ class Gmail:
 
         labels_ids = [lbl.id if isinstance(lbl, Label) else lbl for lbl in labels]
 
-        try:
+        response = self.service.users().messages().list(
+            userId=user_id,
+            q=query,
+            labelIds=labels_ids,
+            includeSpamTrash=include_spam_trash
+        ).execute()
+
+        message_refs = []
+        if 'messages' in response:  # ensure request was successful
+            message_refs.extend(response['messages'])
+
+        while 'nextPageToken' in response:
+            page_token = response['nextPageToken']
             response = self.service.users().messages().list(
                 userId=user_id,
                 q=query,
                 labelIds=labels_ids,
-                includeSpamTrash=include_spam_trash
+                includeSpamTrash=include_spam_trash,
+                pageToken=page_token
             ).execute()
 
-            message_refs = []
-            if 'messages' in response:  # ensure request was successful
-                message_refs.extend(response['messages'])
+            message_refs.extend(response['messages'])
 
-            while 'nextPageToken' in response:
-                page_token = response['nextPageToken']
-                response = self.service.users().messages().list(
-                    userId=user_id,
-                    q=query,
-                    labelIds=labels_ids,
-                    includeSpamTrash=include_spam_trash,
-                    pageToken=page_token
-                ).execute()
-
-                message_refs.extend(response['messages'])
-
-            return self._get_messages_from_refs(user_id, message_refs, attachments)
-
-        except HttpError as error:
-            raise error
+        return self._get_messages_from_refs(user_id, message_refs, attachments)
 
 
     def list_labels(self, user_id: str = 'me') -> List[Label]:
@@ -409,11 +401,7 @@ class Gmail:
         Returns:
             The list of Label objects.
         '''
-
-        try:
-            res = self.service.users().labels().list(userId=user_id).execute()
-        except HttpError as error:
-            raise error
+        res = self.service.users().labels().list(userId=user_id).execute()
 
         return [Label(name=x['name'], id=x['id']) for x in res['labels']]
 
@@ -427,15 +415,7 @@ class Gmail:
         Returns:
             The created Label object.
         '''
-        try:
-            res = self.service.users().labels().create(
-                userId=user_id,
-                body={'name': name}
-            ).execute()
-
-        except HttpError as error:
-            raise error
-
+        res = self.service.users().labels().create(userId=user_id, body={'name': name}).execute()
         return Label(res['name'], res['id'])
 
     def delete_label(self, label_: Label, user_id: str = 'me'):
@@ -446,14 +426,7 @@ class Gmail:
             label: The label to delete.
             user_id: The user's email address. By default, the authenticated user.
         '''
-        try:
-            self.service.users().labels().delete(
-                userId=user_id,
-                id=label_.id
-            ).execute()
-
-        except HttpError as error:
-            raise error
+        self.service.users().labels().delete(userId=user_id, id=label_.id).execute()
 
 
     def _get_messages_from_refs(
@@ -531,11 +504,8 @@ class Gmail:
         Returns:
             The Message object.
         '''
-        try:
-            # Get message JSON
-            message = self.service.users().messages().get(userId=user_id, id=message_ref['id']).execute()
-        except HttpError as error:
-            raise error
+        # Get message JSON
+        message = self.service.users().messages().get(userId=user_id, id=message_ref['id']).execute()
 
         msg_id = message['id']
         thread_id = message['threadId']
