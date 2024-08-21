@@ -1,4 +1,5 @@
 import base64
+import datetime
 import html
 import math
 import mimetypes
@@ -14,7 +15,6 @@ from email.mime.text import MIMEText
 from typing import List
 
 from bs4 import BeautifulSoup
-from dateutil import parser
 from googleapiclient.discovery import build
 from httplib2 import Http
 from oauth2client import client, file, tools
@@ -529,7 +529,9 @@ class Gmail:
         for hdr in headers:
             if hdr['name'].lower() == 'date':
                 try:
-                    date = str(parser.parse(hdr['value']).astimezone())
+                    date = str(datetime.datetime.strptime(
+                        hdr['value'], '%d %b %Y %H:%M:%S %z'
+                    ).astimezone())
                 except ValueError:
                     date = hdr['value']
             elif hdr['name'].lower() == 'from':
