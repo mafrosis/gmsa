@@ -15,18 +15,16 @@ from email.mime.text import MIMEText
 from typing import List
 
 from bs4 import BeautifulSoup
-from googleapiclient.discovery import build
-from httplib2 import Http
-from oauth2client import client, file, tools
-from oauth2client.clientsecrets import InvalidClientSecretsError
+from google.oauth2.credentials import Credentials
 
 from gmsa import label
 from gmsa.attachment import Attachment
+from gmsa.authentication import AuthenticatedService
 from gmsa.label import Label
 from gmsa.message import Message
 
 
-class Gmail:
+class Gmail(AuthenticatedService):
     '''
     The Gmail class which serves as the entrypoint for the Gmail service API.
 
@@ -41,72 +39,50 @@ class Gmail:
         client_secret_file (str): The name of the user's client secret file.
         service (googleapiclient.discovery.Resource): The Gmail service object.
     '''
-
-    # Allow Gmail to read and write emails, and access settings like aliases.
-    _SCOPES = [
-        'https://www.googleapis.com/auth/gmail.modify',
-        'https://www.googleapis.com/auth/gmail.settings.basic'
-    ]
-
-    # If you don't have a client secret file, follow the instructions at:
-    # https://developers.google.com/gmail/api/quickstart/python
-    # Make sure the client secret file is in the root directory of your app.
-
     def __init__(
-        self, client_secret_file: str = 'client_secret.json', creds_file: str = 'gmail_token.json',
-        access_type: str = 'offline', noauth_local_webserver: bool = False,
-        _creds: client.OAuth2Credentials | None = None,
-    ) -> None:
-        self.client_secret_file = client_secret_file
-        self.creds_file = creds_file
+        self, credentials: Credentials | None = None, credentials_path: str | None = None,
+        token_path: str | None = None, save_token: bool = True, read_only: bool = False,
+        authentication_flow_host: str = 'localhost', authentication_flow_port: int = 8080,
+        authentication_flow_bind_addr: str | None = None
+    ):
+        '''
+        Specify ``credentials`` to use in requests, or ``credentials_path`` and ``token_path`` from which to
+        retrieve credentials.
 
-        try:
-            # The file gmail_token.json stores the user's access and refresh
-            # tokens, and is created automatically when the authorization flow
-            # completes for the first time.
-            if _creds:
-                self.creds = _creds
-            else:
-                store = file.Storage(self.creds_file)
-                self.creds = store.get()
-
-            if not self.creds or self.creds.invalid:
-                flow = client.flow_from_clientsecrets(
-                    self.client_secret_file, self._SCOPES
-                )
-
-                flow.params['access_type'] = access_type
-                flow.params['prompt'] = 'consent'
-
-                args = []
-                if noauth_local_webserver:
-                    args.append('--noauth_local_webserver')
-
-                flags = tools.argparser.parse_args(args)
-                self.creds = tools.run_flow(flow, store, flags)
-
-            self._service = build(
-                'gmail', 'v1', http=self.creds.authorize(Http()),
-                cache_discovery=False
-            )
-
-        except InvalidClientSecretsError as ex:
-            raise FileNotFoundError(
-                "Your 'client_secret.json' file is nonexistent. Make sure "
-                "the file is in the root directory of your application. If "
-                "you don't have a client secrets file, go to https://"
-                "developers.google.com/gmail/api/quickstart/python, and "
-                "follow the instructions listed there."
-            ) from ex
-
-    @property
-    def service(self) -> 'googleapiclient.discovery.Resource':
-        # Since the token is only used through calls to the service object,
-        # this ensure that the token is always refreshed before use.
-        if self.creds.access_token_expired:
-            self.creds.refresh(Http())
-
-        return self._service
+        :param credentials:
+                Credentials with token and refresh token.
+                If specified, ``credentials_path``, ``token_path``, and ``save_token`` are ignored.
+                If not specified, credentials are retrieved from "token.pickle" file (specified in ``token_path`` or
+                default path) or with authentication flow using secret from "credentials.json" ("client_secret_*.json")
+                (specified in ``credentials_path`` or default path)
+        :param credentials_path:
+                Path to "credentials.json" ("client_secret_*.json") file.
+                Default: ~/.credentials/credentials.json or ~/.credentials/client_secret*.json
+        :param token_path:
+                Existing path to load the token from, or path to save the token after initial authentication flow.
+                Default: "token.pickle" in the same directory as the credentials_path
+        :param save_token:
+                Whether to pickle token after authentication flow for future uses
+        :param read_only:
+                If require read only access. Default: False
+        :param authentication_flow_host:
+                Host to receive response during authentication flow
+        :param authentication_flow_port:
+                Port to receive response during authentication flow
+        :param authentication_flow_bind_addr:
+                Optional IP address for the redirect server to listen on when it is not the same as host
+                (e.g. in a container)
+        '''
+        super().__init__(
+            credentials=credentials,
+            credentials_path=credentials_path,
+            token_path=token_path,
+            save_token=save_token,
+            read_only=read_only,
+            authentication_flow_host=authentication_flow_host,
+            authentication_flow_port=authentication_flow_port,
+            authentication_flow_bind_addr=authentication_flow_bind_addr,
+        )
 
     def send_message(
         self, sender: str, to: str, subject: str = '', msg_html: str | None = None,
@@ -464,7 +440,7 @@ class Gmail:
         message_lists = [None] * num_threads
 
         def thread_download_batch(thread_num):
-            gmail = Gmail(_creds=self.creds)
+            gmail = Gmail(credentials=self.credentials)
 
             start = thread_num * batch_size
             end = min(len(message_refs), (thread_num + 1) * batch_size)
@@ -570,7 +546,7 @@ class Gmail:
                 attms.append(attm)
 
         return Message(
-            self.service, self.creds, user_id, msg_id, thread_id, recipient, sender, subject,
+            self.service, self.credentials, user_id, msg_id, thread_id, recipient, sender, subject,
             date, snippet, plain_msg, html_msg, label_ids, attms, msg_hdrs, cc, bcc
         )
 
