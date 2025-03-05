@@ -1,11 +1,12 @@
 import base64
+import concurrent.futures
 import datetime
 import html
-import math
+import http.client
+import logging
 import mimetypes
 import os
 import re
-import threading
 from email.mime.application import MIMEApplication
 from email.mime.audio import MIMEAudio
 from email.mime.base import MIMEBase
@@ -14,6 +15,8 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from typing import List
 
+import google_auth_httplib2
+import httplib2
 from bs4 import BeautifulSoup
 from google.oauth2.credentials import Credentials
 
@@ -21,6 +24,8 @@ from gmsa.attachment import Attachment
 from gmsa.authentication import AuthenticatedService
 from gmsa.label import Label
 from gmsa.message import Message
+
+logger = logging.getLogger('gmsa')
 
 
 class Gmail(AuthenticatedService):
@@ -113,7 +118,7 @@ class Gmail(AuthenticatedService):
             attachments=attachments, signature=signature, user_id=user_id
         )
         res = self.service.users().messages().send(userId='me', body=msg).execute()
-        return self._build_message_from_ref(user_id, res, 'reference')
+        return self.fetch_message(user_id, res, 'reference')
 
 
     def get_messages(
@@ -163,10 +168,15 @@ class Gmail(AuthenticatedService):
 
             message_refs.extend(response['messages'])
 
-        return self._get_messages_from_refs(user_id, message_refs, attachments)
+        logger.debug('Message refs found: %s', len(message_refs))
+
+        return self._fetch_messages(user_id, message_refs, attachments)
 
 
-    def list_labels(self, user_id: str = 'me') -> List[Label]:
+    def list_labels(
+        self, user_id: str = 'me',
+        http: google_auth_httplib2.AuthorizedHttp | None = None
+    ) -> List[Label]:
         '''
         Retrieves all labels for the specified user.
 
@@ -179,7 +189,7 @@ class Gmail(AuthenticatedService):
         Returns:
             The list of Label objects.
         '''
-        res = self.service.users().labels().list(userId=user_id).execute()
+        res = self.service.users().labels().list(userId=user_id).execute(http=http)
 
         return [Label(name=x['name'], id=x['id']) for x in res['labels']]
 
@@ -207,10 +217,7 @@ class Gmail(AuthenticatedService):
         self.service.users().labels().delete(userId=user_id, id=label_.id).execute()
 
 
-    def _get_messages_from_refs(
-        self, user_id: str, message_refs: List[dict], attachments: str = 'reference',
-        parallel: bool = True
-    ) -> List[Message]:
+    def _fetch_messages(self, user_id: str, message_refs: List[dict], attachments: str = 'reference') -> List[Message]:
         '''
         Retrieves the actual messages from a list of references.
 
@@ -221,54 +228,36 @@ class Gmail(AuthenticatedService):
                 'reference' which includes attachment information but does not download the data,
                 and 'download' which downloads the attachment data to store locally.
                 Default 'reference'.
-            parallel: Whether to retrieve messages in parallel. Default true. Currently
-                parallelization is always on, since there is no reason to do otherwise.
         Returns:
             A list of Message objects.
         '''
         if not message_refs:
             return []
 
-        if not parallel:
-            return [self._build_message_from_ref(user_id, ref, attachments) for ref in message_refs]
+        def fetch(msg_id) -> Message:
+            'Fetch a single message on a thread'
+            logger.debug('%s Thread started', msg_id['id'])
+            msg = self.fetch_message(
+                user_id, msg_id, attachments,
+                http=google_auth_httplib2.AuthorizedHttp(self.credentials, http=httplib2.Http()),
+            )
+            logger.debug('%s %s %s', msg_id['id'], msg.subject, msg.date)
+            return msg
 
-        max_num_threads = 12  # empirically chosen, prevents throttling
-        target_msgs_per_thread = 10  # empirically chosen
-        num_threads = min(
-            math.ceil(len(message_refs) / target_msgs_per_thread),
-            max_num_threads
-        )
-        batch_size = math.ceil(len(message_refs) / num_threads)
-        message_lists = [None] * num_threads
+        messages = []
 
-        def thread_download_batch(thread_num):
-            gmail = Gmail(credentials=self.credentials)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
+            future_msgs = {executor.submit(fetch, msg) for msg in message_refs}
 
-            start = thread_num * batch_size
-            end = min(len(message_refs), (thread_num + 1) * batch_size)
-            message_lists[thread_num] = [
-                self._build_message_from_ref(user_id, message_refs[i], attachments)
-                for i in range(start, end)
-            ]
+            for future in concurrent.futures.as_completed(future_msgs):
+                messages.append(future.result())
 
-            gmail.service.close()
+        return messages
 
-        threads = [
-            threading.Thread(target=thread_download_batch, args=(i,))
-            for i in range(num_threads)
-        ]
-
-        for t in threads:
-            t.start()
-
-        for t in threads:
-            t.join()
-
-        return sum(message_lists, [])
-
-    def _build_message_from_ref(
-        self, user_id: str, message_ref: dict, attachments: str = 'reference'
-    ) -> Message:
+    def fetch_message(
+            self, user_id: str, message_ref: dict, attachments: str = 'reference',
+            http: google_auth_httplib2.AuthorizedHttp | None = None,
+        ) -> Message:
         '''
         Creates a Message object from a reference.
 
@@ -283,13 +272,15 @@ class Gmail(AuthenticatedService):
             The Message object.
         '''
         # Get message JSON
-        message = self.service.users().messages().get(userId=user_id, id=message_ref['id']).execute()
+        message = self.service.users().messages().get(
+            userId=user_id, id=message_ref['id']
+        ).execute(http=http)
 
         msg_id = message['id']
         thread_id = message['threadId']
         label_ids = []
         if 'labelIds' in message:
-            user_labels = {x.id: x for x in self.list_labels(user_id=user_id)}
+            user_labels = {x.id: x for x in self.list_labels(user_id=user_id, http=http)}
             label_ids = [user_labels[x] for x in message['labelIds']]
         snippet = html.unescape(message['snippet'])
 
@@ -325,7 +316,8 @@ class Gmail(AuthenticatedService):
 
             msg_hdrs[hdr['name']] = hdr['value']
 
-        parts = self._evaluate_message_payload(payload, user_id, message_ref['id'], attachments)
+        parts = self._evaluate_message_payload(payload, user_id, message_ref['id'], attachments, http=http)
+        logger.debug('%s parts: %s', msg_id, len(parts))
 
         plain_msg = None
         html_msg = None
@@ -353,7 +345,8 @@ class Gmail(AuthenticatedService):
         )
 
     def _evaluate_message_payload(
-        self, payload: dict, user_id: str, msg_id: str, attachments: str = 'reference'
+        self, payload: dict, user_id: str, msg_id: str, attachments: str = 'reference',
+        http: google_auth_httplib2.AuthorizedHttp | None = None,
     ) -> List[dict]:
         '''
         Recursively evaluates a message payload.
@@ -395,7 +388,7 @@ class Gmail(AuthenticatedService):
             else:
                 res = self.service.users().messages().attachments().get(
                     userId=user_id, messageId=msg_id, id=att_id
-                ).execute()
+                ).execute(http=http)
                 data = res['data']
 
             file_data = base64.urlsafe_b64decode(data)
@@ -418,7 +411,7 @@ class Gmail(AuthenticatedService):
             ret = []
             if 'parts' in payload:
                 for part in payload['parts']:
-                    ret.extend(self._evaluate_message_payload(part, user_id, msg_id, attachments))
+                    ret.extend(self._evaluate_message_payload(part, user_id, msg_id, attachments, http=http))
             return ret
 
         return []
