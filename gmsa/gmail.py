@@ -15,6 +15,7 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from typing import List
 
+import backoff
 import google_auth_httplib2
 import httplib2
 from bs4 import BeautifulSoup
@@ -254,6 +255,7 @@ class Gmail(AuthenticatedService):
 
         return messages
 
+    @backoff.on_exception(backoff.expo, http.client.IncompleteRead)
     def fetch_message(
             self, user_id: str, message_ref: dict, attachments: str = 'reference',
             http: google_auth_httplib2.AuthorizedHttp | None = None,
