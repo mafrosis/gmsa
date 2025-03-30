@@ -1,4 +1,4 @@
-__version__ = '0.1'
+__version__ = '0.3'
 __author__ = 'mafrosis'
 __author__ = 'jeremyephron'
 
